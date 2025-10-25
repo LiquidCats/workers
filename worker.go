@@ -88,7 +88,7 @@ func (r *Runner[T]) Run(ctx context.Context) error {
 				active := r.activeWorkers.Load()
 				busy := r.busyWorkers.Load()
 
-				if active == 0 && busy == 0 {
+				if active == 0 {
 					continue
 				}
 
@@ -140,17 +140,7 @@ func (r *Runner[T]) spawn(ctx context.Context, g *errgroup.Group) {
 	}
 
 	g.Go(func() error {
-		defer func() {
-			for {
-				current := r.activeWorkers.Load()
-				if current <= 0 {
-					break
-				}
-				if r.activeWorkers.CompareAndSwap(current, current-1) {
-					break
-				}
-			}
-		}()
+		defer r.activeWorkers.Add(^uint32(0))
 
 		// Add panic recovery
 		defer func() {
@@ -160,11 +150,11 @@ func (r *Runner[T]) spawn(ctx context.Context, g *errgroup.Group) {
 
 		for {
 			select {
+			case <-ctx.Done():
+				return ctx.Err()
 			case <-r.deflateCh:
 				// Scale down
 				return nil
-			case <-ctx.Done():
-				return ctx.Err()
 			case d, ok := <-r.dataCh:
 				if !ok {
 					r.stopping.Store(true)
@@ -175,15 +165,7 @@ func (r *Runner[T]) spawn(ctx context.Context, g *errgroup.Group) {
 
 				r.h.Handle(ctx, d)
 
-				for {
-					current := r.busyWorkers.Load()
-					if current <= 0 {
-						break
-					}
-					if r.busyWorkers.CompareAndSwap(current, current-1) {
-						break
-					}
-				}
+				r.busyWorkers.Add(^uint32(0))
 			}
 		}
 	})
