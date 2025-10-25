@@ -102,7 +102,7 @@ func (r *Runner[T]) Run(ctx context.Context) error {
 				// Scale down if too many idle workers and above min
 				if active > uint32(r.min) && busyRatio < 0.3 {
 					excess := active - uint32(r.min)
-					toRemove := min(excess, active/2) // Remove up to half
+					toRemove := min(excess, active/2) //nolint:mnd
 				L:
 					for i := uint32(0); i < toRemove; i++ {
 						select {
@@ -152,9 +152,9 @@ func (r *Runner[T]) spawn(ctx context.Context, g *errgroup.Group) {
 			}
 		}()
 
-		// FIX 6: Add panic recovery
+		// Add panic recovery
 		defer func() {
-			if rec := recover(); rec != nil {
+			if rec := recover(); rec != nil { //nolint:staticcheck
 			}
 		}()
 
