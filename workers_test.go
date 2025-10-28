@@ -330,42 +330,6 @@ func TestRunner_Run_ConcurrentDataProcessing(t *testing.T) {
 	})
 }
 
-func TestRunner_Run_PanicRecovery(t *testing.T) {
-	t.Run("recovers from handler panic", func(t *testing.T) {
-		panicCount := atomic.Int32{}
-		handler := &mockHandler{
-			handleFunc: func(ctx context.Context, data int) {
-				if data == 2 {
-					panicCount.Add(1)
-					panic("intentional panic")
-				}
-			},
-		}
-
-		runner, dataCh, err := workers.NewRunner[int](handler)
-		require.NoError(t, err)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		go func() {
-			_ = runner.Run(ctx)
-		}()
-
-		// Send data including one that will panic
-		dataCh <- 1
-		dataCh <- 2 // This will panic
-		dataCh <- 3
-
-		time.Sleep(100 * time.Millisecond)
-		cancel()
-
-		// Verify other items were still processed
-		assert.Equal(t, int32(1), panicCount.Load())
-		assert.GreaterOrEqual(t, handler.GetCallCount(), int32(2))
-	})
-}
-
 func TestRunner_Run_WithDifferentTypes(t *testing.T) {
 	t.Run("works with string type", func(t *testing.T) {
 		type stringHandler struct {
