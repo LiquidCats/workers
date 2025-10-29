@@ -88,7 +88,7 @@ func (r *Runner[T]) Run(ctx context.Context) error {
 				active := r.activeWorkers.Load()
 				busy := r.busyWorkers.Load()
 
-				if active == 0 && busy == 0 {
+				if active == 0 {
 					continue
 				}
 
@@ -104,7 +104,7 @@ func (r *Runner[T]) Run(ctx context.Context) error {
 					excess := active - uint32(r.min)
 					toRemove := min(excess, active/2) //nolint:mnd
 				L:
-					for i := uint32(0); i < toRemove; i++ {
+					for range toRemove {
 						select {
 						case r.deflateCh <- struct{}{}:
 						case <-ctx.Done():
@@ -140,34 +140,21 @@ func (r *Runner[T]) spawn(ctx context.Context, g *errgroup.Group) {
 	}
 
 	g.Go(func() error {
-		defer func() {
-			for {
-				current := r.activeWorkers.Load()
-				if current <= 0 {
-					break
-				}
-				if r.activeWorkers.CompareAndSwap(current, current-1) {
-					break
-				}
-			}
-		}()
-
-		// Add panic recovery
-		defer func() {
-			if rec := recover(); rec != nil { //nolint:staticcheck
-			}
-		}()
+		defer r.activeWorkers.Add(^uint32(0))
 
 		for {
 			select {
+			case <-ctx.Done():
+				return ctx.Err()
 			case <-r.deflateCh:
 				// Scale down
 				return nil
-			case <-ctx.Done():
-				return ctx.Err()
 			case d, ok := <-r.dataCh:
 				if !ok {
 					r.stopping.Store(true)
+					return nil
+				}
+				if r.stopping.Load() {
 					return nil
 				}
 
@@ -175,15 +162,7 @@ func (r *Runner[T]) spawn(ctx context.Context, g *errgroup.Group) {
 
 				r.h.Handle(ctx, d)
 
-				for {
-					current := r.busyWorkers.Load()
-					if current <= 0 {
-						break
-					}
-					if r.busyWorkers.CompareAndSwap(current, current-1) {
-						break
-					}
-				}
+				r.busyWorkers.Add(^uint32(0))
 			}
 		}
 	})
