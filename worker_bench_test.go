@@ -11,14 +11,20 @@ import (
 )
 
 // setupBenchPool creates a pool and ensures workers are ready before benchmarking
-func setupBenchPool(b *testing.B, handler HandleFunc[int], opts ...Opt[int]) (*Pool[int], context.Context, context.CancelFunc) {
+func setupBenchPool(
+	b *testing.B,
+	handler HandleFunc[int],
+	opts ...Opt[int],
+) (*Pool[int], context.Context, context.CancelFunc) {
 	b.Helper()
 
 	pool, err := New(handler, opts...)
 	require.NoError(b, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go pool.Start(ctx)
+	go func() {
+		_ = pool.Start(ctx)
+	}()
 
 	// Wait for workers to be active
 	deadline := time.Now().Add(500 * time.Millisecond)
@@ -47,7 +53,7 @@ func BenchmarkPool_Submit(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			pool.Submit(ctx, 1)
+			_ = pool.Submit(ctx, 1)
 		}
 	})
 }
@@ -64,9 +70,8 @@ func BenchmarkPool_SubmitSequential(b *testing.B) {
 	)
 	defer cancel()
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		pool.Submit(ctx, i)
+	for i := 0; b.Loop(); i++ {
+		_ = pool.Submit(ctx, i)
 	}
 }
 
@@ -91,7 +96,7 @@ func BenchmarkPool_Throughput(b *testing.B) {
 
 	// Submit all work
 	for i := 0; i < b.N; i++ {
-		pool.Submit(ctx, i)
+		_ = pool.Submit(ctx, i)
 	}
 
 	// Wait for processing to complete
@@ -114,7 +119,7 @@ func BenchmarkPool_CPUBoundWork(b *testing.B) {
 	handler := func(ctx context.Context, v int) error {
 		// Simulate CPU work
 		sum := 0
-		for i := 0; i < 1000; i++ {
+		for i := range 1000 {
 			sum += i
 		}
 		return nil
@@ -126,9 +131,8 @@ func BenchmarkPool_CPUBoundWork(b *testing.B) {
 	)
 	defer cancel()
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		pool.Submit(ctx, i)
+	for i := 0; b.Loop(); i++ {
+		_ = pool.Submit(ctx, i)
 	}
 }
 
@@ -147,7 +151,7 @@ func BenchmarkPool_ConcurrentSubmit(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			pool.Submit(ctx, 1)
+			_ = pool.Submit(ctx, 1)
 		}
 	})
 }
@@ -167,13 +171,12 @@ func BenchmarkPool_MetricsAccess(b *testing.B) {
 
 	// Keep pool busy
 	go func() {
-		for i := 0; i < 1000; i++ {
-			pool.Submit(ctx, i)
+		for i := range 1000 {
+			_ = pool.Submit(ctx, i)
 		}
 	}()
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		pool.ActiveWorkers()
 		pool.BusyWorkers()
 		pool.QueueSize()
@@ -193,10 +196,9 @@ func BenchmarkPool_MemoryAllocation(b *testing.B) {
 	defer cancel()
 
 	b.ReportAllocs()
-	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
-		pool.Submit(ctx, i)
+	for i := 0; b.Loop(); i++ {
+		_ = pool.Submit(ctx, i)
 	}
 }
 
@@ -228,7 +230,7 @@ func BenchmarkPool_Scaling(b *testing.B) {
 
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				pool.Submit(ctx, i)
+				_ = pool.Submit(ctx, i)
 			}
 		})
 	}
@@ -240,8 +242,7 @@ func BenchmarkPool_Creation(b *testing.B) {
 		return nil
 	}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		pool, _ := New(handler,
 			WithMinWorkerCount[int](5),
 			WithMaxWorkerCount[int](10),
@@ -256,8 +257,7 @@ func BenchmarkPool_StartStop(b *testing.B) {
 		return nil
 	}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		pool, _ := New(handler,
 			WithMinWorkerCount[int](2),
 			WithMaxWorkerCount[int](2),
@@ -265,11 +265,9 @@ func BenchmarkPool_StartStop(b *testing.B) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			pool.Start(ctx)
-		}()
+		wg.Go(func() {
+			_ = pool.Start(ctx)
+		})
 
 		time.Sleep(10 * time.Millisecond)
 		cancel()
@@ -294,17 +292,19 @@ func BenchmarkPool_SubmitWithBackpressure(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go pool.Start(ctx)
+	go func() {
+		_ = pool.Start(ctx)
+	}()
+
 	time.Sleep(50 * time.Millisecond)
 
 	// Pre-fill queue to create backpressure
-	for i := 0; i < 10; i++ {
-		pool.Submit(ctx, i)
+	for i := range 10 {
+		_ = pool.Submit(ctx, i)
 	}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		pool.Submit(ctx, i)
+	for i := 0; b.Loop(); i++ {
+		_ = pool.Submit(ctx, i)
 	}
 }
 
@@ -339,7 +339,7 @@ func BenchmarkPool_ComparePoolSizes(b *testing.B) {
 			b.ResetTimer()
 			b.RunParallel(func(pb *testing.PB) {
 				for pb.Next() {
-					pool.Submit(ctx, 1)
+					_ = pool.Submit(ctx, 1)
 				}
 			})
 		})
@@ -365,9 +365,8 @@ func BenchmarkPool_ErrorHandling(b *testing.B) {
 	)
 	defer cancel()
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		pool.Submit(ctx, i)
+	for i := 0; b.Loop(); i++ {
+		_ = pool.Submit(ctx, i)
 	}
 
 	b.ReportMetric(float64(errCount.Load()), "errors")
@@ -410,7 +409,7 @@ func BenchmarkPool_ChannelVsPool(b *testing.B) {
 
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			pool.Submit(ctx, i)
+			_ = pool.Submit(ctx, i)
 		}
 	})
 }
@@ -427,10 +426,9 @@ func BenchmarkPool_ContextCancellation(b *testing.B) {
 	)
 	defer cancel()
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := 0; b.Loop(); i++ {
 		ctx, cancel := context.WithCancel(context.Background())
-		pool.Submit(ctx, i)
+		_ = pool.Submit(ctx, i)
 		cancel()
 	}
 }

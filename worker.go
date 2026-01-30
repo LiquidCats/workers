@@ -172,7 +172,7 @@ func (p *Pool[T]) autoscaler(ctx context.Context, g *errgroup.Group) {
 
 				if active > p.cfg.min && busyRatio < p.cfg.minLoad {
 					excess := active - p.cfg.min
-					toRemove := min(excess, max(1, active/2))
+					toRemove := min(excess, max(1, active/2)) //nolint:mnd
 					for range toRemove {
 						select {
 						case p.deflateCh <- struct{}{}:

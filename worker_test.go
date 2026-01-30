@@ -158,7 +158,9 @@ func (s *PoolTestSuite) TestSubmit_Success() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go pool.Start(ctx)
+	go func() {
+		_ = pool.Start(ctx)
+	}()
 	time.Sleep(100 * time.Millisecond)
 
 	err = pool.Submit(ctx, 42)
@@ -206,7 +208,9 @@ func (s *PoolTestSuite) TestSubmit_CancelledContext() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go pool.Start(ctx)
+	go func() {
+		_ = pool.Start(ctx)
+	}()
 	time.Sleep(100 * time.Millisecond)
 
 	// Fill the worker (blocks in handler) and the channel buffer (size = cfg.max = 1)
@@ -243,10 +247,12 @@ func (s *PoolTestSuite) TestClose_GracefulShutdown() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go pool.Start(ctx)
+	go func() {
+		_ = pool.Start(ctx)
+	}()
 	time.Sleep(100 * time.Millisecond)
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		err := pool.Submit(ctx, i)
 		require.NoError(s.T(), err)
 	}
@@ -307,7 +313,9 @@ func (s *PoolTestSuite) TestMetrics_ActiveWorkers() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go pool.Start(ctx)
+	go func() {
+		_ = pool.Start(ctx)
+	}()
 	time.Sleep(200 * time.Millisecond)
 
 	active := pool.ActiveWorkers()
@@ -333,11 +341,13 @@ func (s *PoolTestSuite) TestMetrics_BusyWorkers() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go pool.Start(ctx)
+	go func() {
+		_ = pool.Start(ctx)
+	}()
 	time.Sleep(100 * time.Millisecond)
 
-	pool.Submit(ctx, 1)
-	pool.Submit(ctx, 2)
+	_ = pool.Submit(ctx, 1)
+	_ = pool.Submit(ctx, 2)
 
 	<-started
 	<-started
@@ -366,12 +376,14 @@ func (s *PoolTestSuite) TestMetrics_QueueSize() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go pool.Start(ctx)
+	go func() {
+		_ = pool.Start(ctx)
+	}()
 	time.Sleep(100 * time.Millisecond)
 
 	go func() {
-		for i := 0; i < 5; i++ {
-			pool.Submit(ctx, i)
+		for i := range 5 {
+			_ = pool.Submit(ctx, i)
 			time.Sleep(10 * time.Millisecond)
 		}
 	}()
@@ -398,7 +410,9 @@ func (s *PoolTestSuite) TestWorkerLifecycle_ErrorPropagation() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go pool.Start(ctx)
+	go func() {
+		_ = pool.Start(ctx)
+	}()
 	time.Sleep(100 * time.Millisecond)
 
 	err = pool.Submit(ctx, 42)
@@ -421,7 +435,9 @@ func (s *PoolTestSuite) TestWorkerLifecycle_ContextCancellation() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	go pool.Start(ctx)
+	go func() {
+		_ = pool.Start(ctx)
+	}()
 	time.Sleep(100 * time.Millisecond)
 
 	active := pool.ActiveWorkers()
@@ -452,11 +468,13 @@ func (s *PoolTestSuite) TestAutoscaling_ScaleUp() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go pool.Start(ctx)
+	go func() {
+		_ = pool.Start(ctx)
+	}()
 	time.Sleep(100 * time.Millisecond)
 
-	for i := 0; i < 10; i++ {
-		pool.Submit(ctx, i)
+	for i := range 10 {
+		_ = pool.Submit(ctx, i)
 	}
 
 	time.Sleep(500 * time.Millisecond)
@@ -486,11 +504,13 @@ func (s *PoolTestSuite) TestAutoscaling_ScaleDown() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go pool.Start(ctx)
+	go func() {
+		_ = pool.Start(ctx)
+	}()
 	time.Sleep(100 * time.Millisecond)
 
-	for i := 0; i < 20; i++ {
-		pool.Submit(ctx, i)
+	for i := range 20 {
+		_ = pool.Submit(ctx, i)
 	}
 
 	time.Sleep(300 * time.Millisecond)
@@ -521,11 +541,13 @@ func (s *PoolTestSuite) TestAutoscaling_MaxWorkerLimit() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go pool.Start(ctx)
+	go func() {
+		_ = pool.Start(ctx)
+	}()
 	time.Sleep(100 * time.Millisecond)
 
-	for i := 0; i < 50; i++ {
-		pool.Submit(ctx, i)
+	for i := range 50 {
+		_ = pool.Submit(ctx, i)
 	}
 
 	time.Sleep(500 * time.Millisecond)
@@ -550,15 +572,17 @@ func TestConcurrentOperations(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go pool.Start(ctx)
+	go func() {
+		_ = pool.Start(ctx)
+	}()
 	time.Sleep(100 * time.Millisecond)
 
 	// Concurrent submits
 	done := make(chan struct{})
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		go func(id int) {
-			for j := 0; j < 100; j++ {
-				pool.Submit(ctx, id*100+j)
+			for j := range 100 {
+				_ = pool.Submit(ctx, id*100+j)
 			}
 			done <- struct{}{}
 		}(i)
@@ -602,7 +626,9 @@ func TestPoolWithDifferentTypes(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		go pool.Start(ctx)
+		go func() {
+			_ = pool.Start(ctx)
+		}()
 		time.Sleep(100 * time.Millisecond)
 
 		err = pool.Submit(ctx, "test")
@@ -634,7 +660,9 @@ func TestPoolWithDifferentTypes(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		go pool.Start(ctx)
+		go func() {
+			_ = pool.Start(ctx)
+		}()
 		time.Sleep(100 * time.Millisecond)
 
 		task := Task{ID: 1, Name: "test"}
