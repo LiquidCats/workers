@@ -8,146 +8,214 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// Default values
 const (
-	DefaultMinWorkerCount   = 3
-	DefaultMaxWorkerCount   = 5
-	DefaultPollingFrequency = 300 * time.Millisecond
+	DefaultMinWorkerCount   int32         = 3
+	DefaultMaxWorkerCount   int32         = 5
+	DefaultPollingFrequency time.Duration = 300 * time.Millisecond
+	DefaultMaxLoad          float64       = 0.7
+	DefaultMinLoad          float64       = 0.3
+	DefaultScalingCooldown  time.Duration = 5 * time.Second
 )
 
-type Runner[T any] struct {
-	min    uint8
-	max    uint32
-	h      Handler[T]
-	dataCh chan T
-	f      time.Duration
+type config[T any] struct {
+	pollingFreq time.Duration
 
-	activeWorkers atomic.Uint32
-	busyWorkers   atomic.Uint32
-	stopping      atomic.Bool
+	min int32
+	max int32
 
+	maxLoad float64
+	minLoad float64
+
+	scalingCooldown time.Duration
+}
+
+type Pool[T any] struct {
+	cfg config[T]
+
+	handler HandleFunc[T]
+
+	dataCh    chan T
 	deflateCh chan struct{}
+
+	activeWorkers   atomic.Int32
+	busyWorkers     atomic.Int32
+	lastScalingTime atomic.Int64
+	stopping        atomic.Bool
+	closed          atomic.Bool
 }
 
-func NewRunner[T any](h Handler[T], opts ...Opt[T]) (*Runner[T], chan<- T, error) {
-	dataCh := make(chan T, DefaultMaxWorkerCount)
-	r := &Runner[T]{
-		h:      h,
-		dataCh: dataCh,
+type HandleFunc[T any] func(ctx context.Context, v T) error
 
-		min: DefaultMinWorkerCount,
-		max: DefaultMaxWorkerCount,
-		f:   DefaultPollingFrequency,
-
-		deflateCh: make(chan struct{}, DefaultMaxWorkerCount),
+func New[T any](h HandleFunc[T], opts ...Opt[T]) (*Pool[T], error) {
+	cfg := config[T]{
+		pollingFreq:     DefaultPollingFrequency,
+		min:             DefaultMinWorkerCount,
+		max:             DefaultMaxWorkerCount,
+		maxLoad:         DefaultMaxLoad,
+		minLoad:         DefaultMinLoad,
+		scalingCooldown: DefaultScalingCooldown,
 	}
-
 	for _, opt := range opts {
-		opt(r)
+		opt(&cfg)
 	}
 
-	if r.min == 0 {
-		return nil, nil, ErrInvalidMinWorkerCount
+	if cfg.min == 0 {
+		return nil, ErrInvalidMinWorkerCount
 	}
-	if r.max == 0 {
-		return nil, nil, ErrInvalidMaxWorkerCount
+	if cfg.max == 0 {
+		return nil, ErrInvalidMaxWorkerCount
 	}
-	if uint32(r.min) > r.max {
-		return nil, nil, ErrInvalidMinMaxWorkerCount
+	if cfg.min > cfg.max {
+		return nil, ErrInvalidMinMaxWorkerCount
 	}
-	if r.f == 0 {
-		return nil, nil, ErrInvalidPollingFrequency
+	if cfg.pollingFreq == 0 {
+		return nil, ErrInvalidPollingFrequency
+	}
+	if cfg.maxLoad > 1 || cfg.maxLoad <= 0 {
+		return nil, ErrInvalidMaxLoad
+	}
+	if cfg.minLoad < 0 || cfg.minLoad >= cfg.maxLoad {
+		return nil, ErrInvalidMinLoad
 	}
 
-	return r, r.dataCh, nil
+	p := &Pool[T]{
+		cfg:       cfg,
+		handler:   h,
+		dataCh:    make(chan T, cfg.max),
+		deflateCh: make(chan struct{}, cfg.max),
+	}
+
+	return p, nil
 }
 
-func (r *Runner[T]) Run(ctx context.Context) error {
-	ticker := time.NewTicker(r.f)
-	defer ticker.Stop()
-	defer close(r.deflateCh)
-
-	g, ctx := errgroup.WithContext(ctx)
-
-	// Spawn minimum workers upfront
-	for i := 0; i < int(r.min); i++ {
-		r.spawn(ctx, g)
+func (p *Pool[T]) Submit(ctx context.Context, data T) error {
+	if p.closed.Load() {
+		return ErrPoolClosed
 	}
 
+	select {
+	case p.dataCh <- data:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (p *Pool[T]) Close() error {
+	if p.closed.CompareAndSwap(false, true) {
+		close(p.dataCh)
+	}
+	return nil
+}
+
+func (p *Pool[T]) Start(ctx context.Context) error {
+	if p.closed.Load() {
+		return ErrPoolClosed
+	}
+
+	group, ctx := errgroup.WithContext(ctx)
+
+	p.autoscaler(ctx, group)
+
+	for range p.cfg.min {
+		p.spawn(ctx, group)
+	}
+
+	return group.Wait()
+}
+
+// ActiveWorkers returns the current number of active workers.
+func (p *Pool[T]) ActiveWorkers() int32 {
+	return p.activeWorkers.Load()
+}
+
+// BusyWorkers returns the current number of busy workers.
+func (p *Pool[T]) BusyWorkers() int32 {
+	return p.busyWorkers.Load()
+}
+
+// QueueSize returns the current number of pending items in the queue.
+func (p *Pool[T]) QueueSize() int {
+	return len(p.dataCh)
+}
+
+func (p *Pool[T]) autoscaler(ctx context.Context, g *errgroup.Group) {
 	g.Go(func() error {
+		ticker := time.NewTicker(p.cfg.pollingFreq)
+		defer ticker.Stop()
+
 		for {
 			select {
-			case <-ctx.Done():
-				r.stopping.Store(true)
-				return ctx.Err()
 			case <-ticker.C:
-				if r.stopping.Load() {
-					return nil
-				}
-
-				active := r.activeWorkers.Load()
-				busy := r.busyWorkers.Load()
+				active := p.activeWorkers.Load()
+				busy := p.busyWorkers.Load()
 
 				if active == 0 {
 					continue
 				}
 
-				// Scale up if >= 70% busy and below max
-				busyRatio := float64(busy) / float64(active)
-				if active > 0 && busyRatio >= 0.7 && active < r.max {
-					r.spawn(ctx, g)
+				now := time.Now().UnixNano()
+				lastScaling := p.lastScalingTime.Load()
+				cooldownNanos := p.cfg.scalingCooldown.Nanoseconds()
+
+				if now-lastScaling < cooldownNanos {
 					continue
 				}
 
-				// Scale down if too many idle workers and above min
-				if active > uint32(r.min) && busyRatio < 0.3 {
-					excess := active - uint32(r.min)
-					toRemove := min(excess, active/2) //nolint:mnd
-				L:
+				busyRatio := float64(busy) / float64(active)
+
+				if busyRatio >= p.cfg.maxLoad && active < p.cfg.max {
+					p.spawn(ctx, g)
+					p.lastScalingTime.Store(now)
+					continue
+				}
+
+				if active > p.cfg.min && busyRatio < p.cfg.minLoad {
+					excess := active - p.cfg.min
+					toRemove := min(excess, max(1, active/2)) //nolint:mnd
 					for range toRemove {
 						select {
-						case r.deflateCh <- struct{}{}:
-						case <-ctx.Done():
-							return nil
+						case p.deflateCh <- struct{}{}:
 						default:
-							break L
 						}
 					}
+					p.lastScalingTime.Store(now)
 				}
+			case <-ctx.Done():
+				return ctx.Err()
 			}
 		}
 	})
-
-	return g.Wait()
 }
 
-func (r *Runner[T]) spawn(ctx context.Context, g *errgroup.Group) {
+func (r *Pool[T]) spawn(ctx context.Context, g *errgroup.Group) {
 	if r.stopping.Load() {
 		return
 	}
 
-	// Atomic compare-and-swap to prevent race condition
-	for {
-		current := r.activeWorkers.Load()
-		if current >= r.max {
-			return
-		}
-		// Atomically increment only if value hasn't changed
-		if r.activeWorkers.CompareAndSwap(current, current+1) {
-			break
-		}
-		// If CAS failed, retry (another goroutine modified it)
-	}
-
 	g.Go(func() error {
-		defer r.activeWorkers.Add(^uint32(0))
+		// Atomic compare-and-swap to prevent race condition
+		var workerStarted bool
+		for {
+			current := r.activeWorkers.Load()
+			if current >= r.cfg.max {
+				return nil
+			}
+			if r.activeWorkers.CompareAndSwap(current, current+1) {
+				workerStarted = true
+				break
+			}
+		}
+
+		if workerStarted {
+			defer r.activeWorkers.Add(-1)
+		}
 
 		for {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
 			case <-r.deflateCh:
-				// Scale down
 				return nil
 			case d, ok := <-r.dataCh:
 				if !ok {
@@ -159,10 +227,12 @@ func (r *Runner[T]) spawn(ctx context.Context, g *errgroup.Group) {
 				}
 
 				r.busyWorkers.Add(1)
+				err := r.handler(ctx, d)
+				r.busyWorkers.Add(-1)
 
-				r.h.Handle(ctx, d)
-
-				r.busyWorkers.Add(^uint32(0))
+				if err != nil {
+					return err
+				}
 			}
 		}
 	})

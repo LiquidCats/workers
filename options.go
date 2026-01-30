@@ -2,24 +2,40 @@ package workers
 
 import "time"
 
-type Opt[T any] func(r *Runner[T])
+type Opt[T any] func(r *config[T])
 
-func WithMinWorkerCount[T any](min uint8) Opt[T] {
-	return func(r *Runner[T]) {
-		r.min = min
+func WithMinWorkerCount[T any](min int32) Opt[T] {
+	return func(cfg *config[T]) {
+		cfg.min = min
 	}
 }
 
-func WithMaxWorkerCount[T any](max uint32) Opt[T] {
-	return func(r *Runner[T]) {
-		r.max = max
-		r.deflateCh = make(chan struct{}, max)
-		r.dataCh = make(chan T)
+func WithMaxWorkerCount[T any](max int32) Opt[T] {
+	return func(cfg *config[T]) {
+		cfg.max = max
 	}
 }
 
 func WithPollingFrequency[T any](f time.Duration) Opt[T] {
-	return func(r *Runner[T]) {
-		r.f = f
+	return func(cfg *config[T]) {
+		cfg.pollingFreq = f
+	}
+}
+
+func WithMaxLoad[T any](maxLoad float64) Opt[T] {
+	return func(cfg *config[T]) {
+		cfg.maxLoad = maxLoad
+	}
+}
+
+func WithMinLoad[T any](minLoad float64) Opt[T] {
+	return func(cfg *config[T]) {
+		cfg.minLoad = minLoad
+	}
+}
+
+func WithScalingCooldown[T any](cooldown time.Duration) Opt[T] {
+	return func(cfg *config[T]) {
+		cfg.scalingCooldown = cooldown
 	}
 }
